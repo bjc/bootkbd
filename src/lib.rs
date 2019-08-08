@@ -2,7 +2,7 @@
 
 #![no_std]
 
-use log::{debug, error, info};
+use log::{debug, error};
 use usb_host::{
     ConfigurationDescriptor, DescriptorType, DeviceDescriptor, Direction, Driver, DriverError,
     Endpoint, RequestCode, RequestDirection, RequestKind, RequestRecipient, RequestType,
@@ -91,7 +91,7 @@ enum DeviceState {
     Addressed,
     WaitForSettle(usize),
     GetConfig,
-    SetConfig,
+    SetConfig(u8),
     SetIdle,
     SetReport,
     Running,
@@ -203,12 +203,12 @@ impl Device {
                 )?;
                 assert!(len == conf_desc.w_total_length as usize);
 
-                self.state = DeviceState::SetConfig
+                // TODO: browse configs and pick the "best" one. But
+                // this should always be ok, at least.
+                self.state = DeviceState::SetConfig(1)
             }
 
-            DeviceState::SetConfig => {
-                // TODO: extract real configuration to choose.
-                let conf: u8 = 1;
+            DeviceState::SetConfig(config_index) => {
                 host.control_transfer(
                     &mut self.ep0,
                     RequestType::from((
@@ -217,7 +217,7 @@ impl Device {
                         RequestRecipient::Device,
                     )),
                     RequestCode::SetConfiguration,
-                    WValue::from((conf, 0)),
+                    WValue::from((config_index, 0)),
                     0,
                     none,
                 )?;
