@@ -22,24 +22,32 @@ const MAX_DEVICES: usize = 1;
 // And how many endpoints we can support per-device.
 const MAX_ENDPOINTS: usize = 2;
 
-pub struct BootKeyboard {
+pub struct BootKeyboard<F> {
     devices: [Option<Device>; MAX_DEVICES],
+    callback: F,
 }
-impl core::fmt::Debug for BootKeyboard {
+impl<F> core::fmt::Debug for BootKeyboard<F> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "BootKeyboard")
     }
 }
 
-impl BootKeyboard {
-    pub fn new() -> Self {
+impl<F> BootKeyboard<F>
+where
+    F: FnMut(u8, &[u8]),
+{
+    pub fn new(callback: F) -> Self {
         Self {
             devices: [None; MAX_DEVICES],
+            callback: callback,
         }
     }
 }
 
-impl Driver for BootKeyboard {
+impl<F> Driver for BootKeyboard<F>
+where
+    F: FnMut(u8, &[u8]),
+{
     fn want_device(&self, _device: &DeviceDescriptor) -> bool {
         true
     }
@@ -68,7 +76,8 @@ impl Driver for BootKeyboard {
     fn tick(&mut self, millis: usize, host: &mut dyn USBHost) -> Result<(), DriverError> {
         for d in &mut self.devices[..] {
             if let Some(ref mut dev) = d {
-                if let Err(TransferError::Permanent(e)) = dev.fsm(millis, host) {
+                if let Err(TransferError::Permanent(e)) = dev.fsm(millis, host, &mut self.callback)
+                {
                     return Err(DriverError::Permanent(dev.addr, e));
                 }
             }
@@ -114,7 +123,12 @@ impl Device {
         }
     }
 
-    fn fsm(&mut self, millis: usize, host: &mut dyn USBHost) -> Result<(), TransferError> {
+    fn fsm(
+        &mut self,
+        millis: usize,
+        host: &mut dyn USBHost,
+        callback: &mut dyn FnMut(u8, &[u8]),
+    ) -> Result<(), TransferError> {
         // TODO: either we need another `control_transfer` that
         // doesn't take data, or this `none` value needs to be put in
         // the usb-host layer. None of these options are good.
@@ -258,7 +272,9 @@ impl Device {
                     match host.in_transfer(ep, &mut buf) {
                         Err(TransferError::Permanent(msg)) => error!("reading report: {}", msg),
                         Err(TransferError::Retry(_)) => return Ok(()),
-                        Ok(len) => info!("report: {} - {:?}", len, buf),
+                        Ok(_) => {
+                            callback(self.addr, &buf);
+                        }
                     }
                 }
             }
