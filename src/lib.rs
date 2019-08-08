@@ -1,3 +1,5 @@
+//! Simple USB host-side driver for boot protocol keyboards.
+
 #![no_std]
 
 use log::{debug, error, info};
