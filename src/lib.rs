@@ -208,6 +208,7 @@ impl Device {
                     Ok(None) => Err(TransferError::Permanent("no boot keyboard found"))?,
                     Err(e) => Err(TransferError::Permanent(e))?,
                 };
+                info!("Boot keyboard found on endpoint {}", ep);
 
                 self.endpoints[0] = Some(EP::new(
                     self.addr,
