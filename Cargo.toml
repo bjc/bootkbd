@@ -13,3 +13,6 @@ repository = "https://github.com/bjc/bootkbd.git"
 [dependencies]
 usb-host = "~0.1"
 log = "~0.4"
+
+[patch.crates-io]
+usb-host = { git = "https://github.com/bjc/usb-host.git", rev = "b0be48424e81384de3280b5a5ac521d694b82e15" }
