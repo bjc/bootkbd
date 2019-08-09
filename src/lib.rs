@@ -2,13 +2,14 @@
 
 #![no_std]
 
-use log::{debug, error};
+use log::{debug, error, info};
 use usb_host::{
     ConfigurationDescriptor, DescriptorType, DeviceDescriptor, Direction, Driver, DriverError,
-    Endpoint, RequestCode, RequestDirection, RequestKind, RequestRecipient, RequestType,
-    TransferError, TransferType, USBHost, WValue,
+    Endpoint, EndpointDescriptor, InterfaceDescriptor, RequestCode, RequestDirection, RequestKind,
+    RequestRecipient, RequestType, TransferError, TransferType, USBHost, WValue,
 };
 
+use core::convert::TryFrom;
 use core::mem::{self, MaybeUninit};
 use core::ptr;
 
@@ -202,6 +203,18 @@ impl Device {
                     Some(&mut tmp),
                 )?;
                 assert!(len == conf_desc.w_total_length as usize);
+                let ep = match ep_for_bootkbd(&tmp) {
+                    Ok(Some(n)) => n & 0x7f,
+                    Ok(None) => Err(TransferError::Permanent("no boot keyboard found"))?,
+                    Err(e) => Err(TransferError::Permanent(e))?,
+                };
+
+                self.endpoints[0] = Some(EP::new(
+                    self.addr,
+                    ep,
+                    TransferType::Interrupt,
+                    Direction::In,
+                ));
 
                 // TODO: browse configs and pick the "best" one. But
                 // this should always be ok, at least.
@@ -221,13 +234,6 @@ impl Device {
                     0,
                     none,
                 )?;
-
-                self.endpoints[0] = Some(EP::new(
-                    self.addr,
-                    1,
-                    TransferType::Interrupt,
-                    Direction::In,
-                ));
 
                 self.state = DeviceState::SetIdle
             }
@@ -282,6 +288,32 @@ impl Device {
 
         Ok(())
     }
+}
+
+#[allow(unused)]
+fn config_thing(bytes: &[u8]) -> Result<(), &'static str> {
+    info!("config: {:?}", bytes);
+    if bytes.len() == 0 {
+        Err("descriptor buffer empty")?
+    }
+    let desc_len = bytes[0];
+    if bytes.len() < desc_len as usize {
+        Err("descriptor buffer too short")?
+    }
+
+    let desc_type = DescriptorType::try_from(bytes[1])?;
+    let len = match desc_type {
+        DescriptorType::Device => mem::size_of::<DeviceDescriptor>(),
+        DescriptorType::Configuration => mem::size_of::<ConfigurationDescriptor>(),
+        DescriptorType::Interface => mem::size_of::<InterfaceDescriptor>(),
+        DescriptorType::Endpoint => mem::size_of::<EndpointDescriptor>(),
+        _ => desc_len as usize,
+    };
+    if bytes.len() < len {
+        Err("descriptor buffer too short")?
+    }
+
+    Ok(())
 }
 
 unsafe fn to_slice_mut<T>(v: &mut T) -> &mut [u8] {
@@ -347,5 +379,201 @@ impl Endpoint for EP {
 
     fn set_out_toggle(&mut self, toggle: bool) {
         self.out_toggle = toggle
+    }
+}
+
+enum Descriptor<'a> {
+    Configuration(&'a ConfigurationDescriptor),
+    Interface(&'a InterfaceDescriptor),
+    Endpoint(&'a EndpointDescriptor),
+    Other(&'a [u8]),
+}
+fn next_descriptor(buf: &[u8]) -> Result<Descriptor, &'static str> {
+    assert!(buf.len() >= 2);
+    let len = buf[0] as usize;
+    assert!(buf.len() >= len);
+
+    // TODO: this is basically guaranteed to have unaligned
+    // access, isn't it? That's not good. RIP zero-copy?
+    match DescriptorType::try_from(buf[1]) {
+        Ok(DescriptorType::Configuration) => {
+            let desc: &ConfigurationDescriptor = unsafe { &*(buf as *const _ as *const _) };
+            Ok(Descriptor::Configuration(desc))
+        }
+
+        Ok(DescriptorType::Interface) => {
+            let desc: &InterfaceDescriptor = unsafe { &*(buf as *const _ as *const _) };
+            Ok(Descriptor::Interface(desc))
+        }
+
+        Ok(DescriptorType::Endpoint) => {
+            let desc: &EndpointDescriptor = unsafe { &*(buf as *const _ as *const _) };
+            Ok(Descriptor::Endpoint(desc))
+        }
+
+        // Return a raw byte slice if we don't know how to parse
+        // the descriptor naturally, so callers can figure it out.
+        Err(_) => Ok(Descriptor::Other(&buf[..len])),
+        _ => Ok(Descriptor::Other(&buf[..len])),
+    }
+}
+
+fn ep_for_bootkbd(buf: &[u8]) -> Result<Option<u8>, &'static str> {
+    let mut offset = 0;
+    let mut interface_found = false;
+    while offset < buf.len() {
+        let desc = next_descriptor(&buf[offset..])?;
+        offset += buf[offset] as usize;
+
+        if let Descriptor::Interface(idesc) = desc {
+            interface_found = idesc.b_interface_class == 0x03
+                && idesc.b_interface_sub_class == 0x01
+                && idesc.b_interface_protocol == 0x01;
+        } else if let Descriptor::Endpoint(edesc) = desc {
+            if interface_found {
+                return Ok(Some(edesc.b_endpoint_address));
+            }
+        }
+    }
+    Ok(None)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn parse_logitech_g105_config() {
+        // Config, Interface (0.0), HID, Endpoint, Interface (1.0), HID, Endpoint
+        let raw: &[u8] = &[
+            0x09, 0x02, 0x3b, 0x00, 0x02, 0x01, 0x04, 0xa0, 0x64, 0x09, 0x04, 0x00, 0x00, 0x01,
+            0x03, 0x01, 0x01, 0x00, 0x09, 0x21, 0x10, 0x01, 0x00, 0x01, 0x22, 0x41, 0x00, 0x07,
+            0x05, 0x81, 0x03, 0x08, 0x00, 0x0a, 0x09, 0x04, 0x01, 0x00, 0x01, 0x03, 0x00, 0x00,
+            0x00, 0x09, 0x21, 0x10, 0x01, 0x00, 0x01, 0x22, 0x85, 0x00, 0x07, 0x05, 0x82, 0x03,
+            0x08, 0x00, 0x0a,
+        ];
+        let mut offset = 0;
+
+        let config_desc = ConfigurationDescriptor {
+            b_length: 9,
+            b_descriptor_type: DescriptorType::Configuration,
+            w_total_length: 59,
+            b_num_interfaces: 2,
+            b_configuration_value: 1,
+            i_configuration: 4,
+            bm_attributes: 0xa0,
+            b_max_power: 100,
+        };
+        let desc = next_descriptor(&raw[offset..]).expect("Parsing configuration");
+        if let Descriptor::Configuration(cdesc) = desc {
+            assert_eq!(*cdesc, config_desc, "Configuration descriptor mismatch.");
+            offset += cdesc.b_length as usize;
+        } else {
+            panic!("Wrong descriptor type.");
+        }
+
+        let interface_desc1 = InterfaceDescriptor {
+            b_length: 9,
+            b_descriptor_type: DescriptorType::Interface,
+            b_interface_number: 0,
+            b_alternate_setting: 0,
+            b_num_endpoints: 1,
+            b_interface_class: 0x03,     // HID
+            b_interface_sub_class: 0x01, // Boot Interface,
+            b_interface_protocol: 0x01,  // Keyboard
+            i_interface: 0,
+        };
+        let desc = next_descriptor(&raw[offset..]).expect("Parsing configuration");
+        if let Descriptor::Interface(cdesc) = desc {
+            assert_eq!(*cdesc, interface_desc1, "Interface descriptor mismatch.");
+            offset += cdesc.b_length as usize;
+        } else {
+            panic!("Wrong descriptor type.");
+        }
+
+        // Unknown descriptor just yields a byte slice.
+        let hid_desc1: &[u8] = &[0x09, 0x21, 0x10, 0x01, 0x00, 0x01, 0x22, 0x41, 0x00];
+        let desc = next_descriptor(&raw[offset..]).expect("Parsing configuration");
+        if let Descriptor::Other(cdesc) = desc {
+            assert_eq!(cdesc, hid_desc1, "HID descriptor mismatch.");
+            offset += cdesc[0] as usize;
+        } else {
+            panic!("Wrong descriptor type.");
+        }
+
+        let endpoint_desc1 = EndpointDescriptor {
+            b_length: 7,
+            b_descriptor_type: DescriptorType::Endpoint,
+            b_endpoint_address: 0x81,
+            bm_attributes: 0x03,
+            w_max_packet_size: 0x08,
+            b_interval: 0x0a,
+        };
+        let desc = next_descriptor(&raw[offset..]).expect("Parsing configuration");
+        if let Descriptor::Endpoint(cdesc) = desc {
+            assert_eq!(*cdesc, endpoint_desc1, "Endpoint descriptor mismatch.");
+            offset += cdesc.b_length as usize;
+        } else {
+            panic!("Wrong descriptor type.");
+        }
+
+        let interface_desc2 = InterfaceDescriptor {
+            b_length: 9,
+            b_descriptor_type: DescriptorType::Interface,
+            b_interface_number: 1,
+            b_alternate_setting: 0,
+            b_num_endpoints: 1,
+            b_interface_class: 0x03,     // HID
+            b_interface_sub_class: 0x00, // No subclass
+            b_interface_protocol: 0x00,  // No protocol
+            i_interface: 0,
+        };
+        let desc = next_descriptor(&raw[offset..]).expect("Parsing configuration");
+        if let Descriptor::Interface(cdesc) = desc {
+            assert_eq!(*cdesc, interface_desc2, "Interface descriptor mismatch.");
+            offset += cdesc.b_length as usize;
+        } else {
+            panic!("Wrong descriptor type.");
+        }
+
+        // Unknown descriptor just yields a byte slice.
+        let hid_desc2 = &[0x09, 0x21, 0x10, 0x01, 0x00, 0x01, 0x22, 0x85, 0x00];
+        let desc = next_descriptor(&raw[offset..]).expect("Parsing configuration");
+        if let Descriptor::Other(cdesc) = desc {
+            assert_eq!(cdesc, hid_desc2, "HID descriptor mismatch.");
+            offset += cdesc[0] as usize;
+        } else {
+            panic!("Wrong descriptor type.");
+        }
+
+        let endpoint_desc2 = EndpointDescriptor {
+            b_length: 7,
+            b_descriptor_type: DescriptorType::Endpoint,
+            b_endpoint_address: 0x82,
+            bm_attributes: 0x03,
+            w_max_packet_size: 0x08,
+            b_interval: 0x0a,
+        };
+        let desc = next_descriptor(&raw[offset..]).expect("Parsing configuration");
+        if let Descriptor::Endpoint(cdesc) = desc {
+            assert_eq!(*cdesc, endpoint_desc2, "Endpoint descriptor mismatch.");
+        } else {
+            panic!("Wrong descriptor type.");
+        }
+    }
+
+    #[test]
+    fn logitech_g105_discovers_ep0() {
+        // Config, Interface (0.0), HID, Endpoint, Interface (1.0), HID, Endpoint
+        let raw: &[u8] = &[
+            0x09, 0x02, 0x3b, 0x00, 0x02, 0x01, 0x04, 0xa0, 0x64, 0x09, 0x04, 0x00, 0x00, 0x01,
+            0x03, 0x01, 0x01, 0x00, 0x09, 0x21, 0x10, 0x01, 0x00, 0x01, 0x22, 0x41, 0x00, 0x07,
+            0x05, 0x81, 0x03, 0x08, 0x00, 0x0a, 0x09, 0x04, 0x01, 0x00, 0x01, 0x03, 0x00, 0x00,
+            0x00, 0x09, 0x21, 0x10, 0x01, 0x00, 0x01, 0x22, 0x85, 0x00, 0x07, 0x05, 0x82, 0x03,
+            0x08, 0x00, 0x0a,
+        ];
+
+        let n = ep_for_bootkbd(raw).expect("Looking for endpoint");
+        assert_eq!(n, Some(0x81));
     }
 }
