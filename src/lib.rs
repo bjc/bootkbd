@@ -2,7 +2,7 @@
 
 #![no_std]
 
-use log::{debug, error, info};
+use log::{self, debug, error, info, trace, LevelFilter};
 use usb_host::{
     ConfigurationDescriptor, DescriptorType, DeviceDescriptor, Direction, Driver, DriverError,
     Endpoint, EndpointDescriptor, InterfaceDescriptor, RequestCode, RequestDirection, RequestKind,
@@ -56,10 +56,10 @@ where
         true
     }
 
-    fn add_device(&mut self, _device: DeviceDescriptor, address: u8) -> Result<(), DriverError> {
+    fn add_device(&mut self, device: DeviceDescriptor, address: u8) -> Result<(), DriverError> {
         for i in 0..self.devices.len() {
             if self.devices[i].is_none() {
-                self.devices[i] = Some(Device::new(address));
+                self.devices[i] = Some(Device::new(address, device.b_max_packet_size));
                 return Ok(());
             }
         }
@@ -109,7 +109,7 @@ struct Device {
 }
 
 impl Device {
-    fn new(addr: u8) -> Self {
+    fn new(addr: u8, max_packet_size: u8) -> Self {
         let endpoints: [Option<EP>; MAX_ENDPOINTS] = {
             let mut eps: [MaybeUninit<Option<EP>>; MAX_ENDPOINTS] =
                 unsafe { mem::MaybeUninit::uninit().assume_init() };
@@ -121,7 +121,13 @@ impl Device {
 
         Self {
             addr: addr,
-            ep0: EP::new(addr, 0, TransferType::Control, Direction::In),
+            ep0: EP::new(
+                addr,
+                0,
+                TransferType::Control,
+                Direction::In,
+                max_packet_size as u16,
+            ),
             endpoints: endpoints,
             state: DeviceState::Addressed,
         }
@@ -189,7 +195,8 @@ impl Device {
                 assert!(len == mem::size_of::<ConfigurationDescriptor>());
                 let conf_desc = unsafe { conf_desc.assume_init() };
 
-                if (conf_desc.w_total_length as usize) < CONFIG_BUFFER_LEN {
+                if (conf_desc.w_total_length as usize) > CONFIG_BUFFER_LEN {
+                    trace!("config descriptor: {:?}", conf_desc);
                     return Err(TransferError::Permanent("config descriptor too large"));
                 }
 
@@ -211,18 +218,15 @@ impl Device {
                     Some(&mut tmp),
                 )?;
                 assert!(len == conf_desc.w_total_length as usize);
-                let ep = match ep_for_bootkbd(&tmp) {
-                    Ok(Some(n)) => n & 0x7f,
-                    Ok(None) => Err(TransferError::Permanent("no boot keyboard found"))?,
-                    Err(e) => Err(TransferError::Permanent(e))?,
-                };
-                info!("Boot keyboard found on endpoint {}", ep);
+                let ep = ep_for_bootkbd(&tmp).expect("no boot keyboard found");
+                info!("Boot keyboard found on {:?}", ep);
 
                 self.endpoints[0] = Some(EP::new(
                     self.addr,
-                    ep,
+                    ep.b_endpoint_address & 0x7f,
                     TransferType::Interrupt,
                     Direction::In,
+                    ep.w_max_packet_size,
                 ));
 
                 // TODO: browse configs and pick the "best" one. But
@@ -278,6 +282,9 @@ impl Device {
                     Some(&mut report),
                 )?;
 
+                // If we made it this far, thins should be ok, so
+                // throttle the logging.
+                log::set_max_level(LevelFilter::Info);
                 self.state = DeviceState::Running
             }
 
@@ -310,17 +317,25 @@ struct EP {
     num: u8,
     transfer_type: TransferType,
     direction: Direction,
+    max_packet_size: u16,
     in_toggle: bool,
     out_toggle: bool,
 }
 
 impl EP {
-    fn new(addr: u8, num: u8, transfer_type: TransferType, direction: Direction) -> Self {
+    fn new(
+        addr: u8,
+        num: u8,
+        transfer_type: TransferType,
+        direction: Direction,
+        max_packet_size: u16,
+    ) -> Self {
         Self {
             addr: addr,
             num: num,
             transfer_type: transfer_type,
             direction: direction,
+            max_packet_size: max_packet_size,
             in_toggle: false,
             out_toggle: false,
         }
@@ -345,7 +360,7 @@ impl Endpoint for EP {
     }
 
     fn max_packet_size(&self) -> u16 {
-        8
+        self.max_packet_size
     }
 
     fn in_toggle(&self) -> bool {
@@ -384,8 +399,8 @@ impl<'a> From<&'a [u8]> for DescriptorParser<'a> {
     }
 }
 
-impl DescriptorParser<'_> {
-    fn next(&mut self) -> Option<Descriptor> {
+impl<'a> DescriptorParser<'a> {
+    fn next<'b>(&'b mut self) -> Option<Descriptor<'a>> {
         if self.pos == self.buf.len() {
             return None;
         }
@@ -434,7 +449,7 @@ impl DescriptorParser<'_> {
     }
 }
 
-fn ep_for_bootkbd(buf: &[u8]) -> Result<Option<u8>, &'static str> {
+fn ep_for_bootkbd<'a>(buf: &'a [u8]) -> Option<&'a EndpointDescriptor> {
     let mut parser = DescriptorParser::from(buf);
     let mut interface_found = false;
     while let Some(desc) = parser.next() {
@@ -444,11 +459,11 @@ fn ep_for_bootkbd(buf: &[u8]) -> Result<Option<u8>, &'static str> {
                 && idesc.b_interface_protocol == 0x01;
         } else if let Descriptor::Endpoint(edesc) = desc {
             if interface_found {
-                return Ok(Some(edesc.b_endpoint_address));
+                return Some(edesc);
             }
         }
     }
-    Ok(None)
+    None
 }
 
 #[cfg(test)]
@@ -582,7 +597,15 @@ mod test {
             0x08, 0x00, 0x0a,
         ];
 
-        let n = ep_for_bootkbd(raw).expect("Looking for endpoint");
-        assert_eq!(n, Some(0x81));
+        let got = ep_for_bootkbd(raw).expect("Looking for endpoint");
+        let want = EndpointDescriptor {
+            b_length: 7,
+            b_descriptor_type: DescriptorType::Endpoint,
+            b_endpoint_address: 0x81,
+            bm_attributes: 0x03,
+            w_max_packet_size: 0x08,
+            b_interval: 0x0a,
+        };
+        assert_eq!(*got, want);
     }
 }
