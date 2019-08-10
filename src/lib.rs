@@ -2,7 +2,7 @@
 
 #![no_std]
 
-use log::{self, debug, error, info, trace, LevelFilter};
+use log::{self, debug, error, info, trace, warn, LevelFilter};
 use usb_host::{
     ConfigurationDescriptor, DescriptorType, DeviceDescriptor, Direction, Driver, DriverError,
     Endpoint, EndpointDescriptor, InterfaceDescriptor, RequestCode, RequestDirection, RequestKind,
@@ -269,7 +269,7 @@ impl Device {
 
             DeviceState::SetReport => {
                 let mut report: [u8; 1] = [0];
-                host.control_transfer(
+                let res = host.control_transfer(
                     &mut self.ep0,
                     RequestType::from((
                         RequestDirection::HostToDevice,
@@ -280,7 +280,11 @@ impl Device {
                     WValue::from((0, 2)),
                     0,
                     Some(&mut report),
-                )?;
+                );
+
+                if let Err(e) = res {
+                    warn!("couldn't set report: {:?}", e)
+                }
 
                 // If we made it this far, thins should be ok, so
                 // throttle the logging.
