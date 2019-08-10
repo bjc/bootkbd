@@ -23,6 +23,9 @@ const MAX_DEVICES: usize = 1;
 // And how many endpoints we can support per-device.
 const MAX_ENDPOINTS: usize = 2;
 
+// The maximum size configuration descriptor we can handle.
+const CONFIG_BUFFER_LEN: usize = 128;
+
 pub struct BootKeyboard<F> {
     devices: [Option<Device>; MAX_DEVICES],
     callback: F,
@@ -186,9 +189,14 @@ impl Device {
                 assert!(len == mem::size_of::<ConfigurationDescriptor>());
                 let conf_desc = unsafe { conf_desc.assume_init() };
 
-                // TODO: do a real allocation later.
-                assert!(conf_desc.w_total_length < 64);
-                let mut buf: [u8; 64] = [0; 64];
+                if (conf_desc.w_total_length as usize) < CONFIG_BUFFER_LEN {
+                    return Err(TransferError::Permanent("config descriptor too large"));
+                }
+
+                // TODO: do a real allocation later. For now, keep a
+                // large-ish static buffer and take an appropriately
+                // sized slice into it for the transfer.
+                let mut buf: [u8; CONFIG_BUFFER_LEN] = [0; CONFIG_BUFFER_LEN];
                 let mut tmp = &mut buf[..conf_desc.w_total_length as usize];
                 let len = host.control_transfer(
                     &mut self.ep0,
@@ -291,32 +299,6 @@ impl Device {
     }
 }
 
-#[allow(unused)]
-fn config_thing(bytes: &[u8]) -> Result<(), &'static str> {
-    info!("config: {:?}", bytes);
-    if bytes.len() == 0 {
-        Err("descriptor buffer empty")?
-    }
-    let desc_len = bytes[0];
-    if bytes.len() < desc_len as usize {
-        Err("descriptor buffer too short")?
-    }
-
-    let desc_type = DescriptorType::try_from(bytes[1])?;
-    let len = match desc_type {
-        DescriptorType::Device => mem::size_of::<DeviceDescriptor>(),
-        DescriptorType::Configuration => mem::size_of::<ConfigurationDescriptor>(),
-        DescriptorType::Interface => mem::size_of::<InterfaceDescriptor>(),
-        DescriptorType::Endpoint => mem::size_of::<EndpointDescriptor>(),
-        _ => desc_len as usize,
-    };
-    if bytes.len() < len {
-        Err("descriptor buffer too short")?
-    }
-
-    Ok(())
-}
-
 unsafe fn to_slice_mut<T>(v: &mut T) -> &mut [u8] {
     let ptr = v as *mut T as *mut u8;
     let len = mem::size_of::<T>();
@@ -389,43 +371,73 @@ enum Descriptor<'a> {
     Endpoint(&'a EndpointDescriptor),
     Other(&'a [u8]),
 }
-fn next_descriptor(buf: &[u8]) -> Result<Descriptor, &'static str> {
-    assert!(buf.len() >= 2);
-    let len = buf[0] as usize;
-    assert!(buf.len() >= len);
 
-    // TODO: this is basically guaranteed to have unaligned
-    // access, isn't it? That's not good. RIP zero-copy?
-    match DescriptorType::try_from(buf[1]) {
-        Ok(DescriptorType::Configuration) => {
-            let desc: &ConfigurationDescriptor = unsafe { &*(buf as *const _ as *const _) };
-            Ok(Descriptor::Configuration(desc))
+// TODO: Iter impl.
+struct DescriptorParser<'a> {
+    buf: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> From<&'a [u8]> for DescriptorParser<'a> {
+    fn from(buf: &'a [u8]) -> Self {
+        Self { buf: buf, pos: 0 }
+    }
+}
+
+impl DescriptorParser<'_> {
+    fn next(&mut self) -> Option<Descriptor> {
+        if self.pos == self.buf.len() {
+            return None;
         }
 
-        Ok(DescriptorType::Interface) => {
-            let desc: &InterfaceDescriptor = unsafe { &*(buf as *const _ as *const _) };
-            Ok(Descriptor::Interface(desc))
-        }
+        assert!(self.pos < (i32::max_value() as usize));
+        assert!(self.pos <= self.buf.len() + 2);
 
-        Ok(DescriptorType::Endpoint) => {
-            let desc: &EndpointDescriptor = unsafe { &*(buf as *const _ as *const _) };
-            Ok(Descriptor::Endpoint(desc))
-        }
+        let end = self.pos + self.buf[self.pos] as usize;
+        assert!(end <= self.buf.len());
 
-        // Return a raw byte slice if we don't know how to parse
-        // the descriptor naturally, so callers can figure it out.
-        Err(_) => Ok(Descriptor::Other(&buf[..len])),
-        _ => Ok(Descriptor::Other(&buf[..len])),
+        // TODO: this is basically guaranteed to have unaligned
+        // access, isn't it? That's not good. RIP zero-copy?
+        let res = match DescriptorType::try_from(self.buf[self.pos + 1]) {
+            Ok(DescriptorType::Configuration) => {
+                let desc: &ConfigurationDescriptor = unsafe {
+                    let ptr = self.buf.as_ptr().offset(self.pos as isize);
+                    &*(ptr as *const _)
+                };
+                Some(Descriptor::Configuration(desc))
+            }
+
+            Ok(DescriptorType::Interface) => {
+                let desc: &InterfaceDescriptor = unsafe {
+                    let ptr = self.buf.as_ptr().offset(self.pos as isize);
+                    &*(ptr as *const _)
+                };
+                Some(Descriptor::Interface(desc))
+            }
+
+            Ok(DescriptorType::Endpoint) => {
+                let desc: &EndpointDescriptor = unsafe {
+                    let ptr = self.buf.as_ptr().offset(self.pos as isize);
+                    &*(ptr as *const _)
+                };
+                Some(Descriptor::Endpoint(desc))
+            }
+
+            // Return a raw byte slice if we don't know how to parse
+            // the descriptor naturally, so callers can figure it out.
+            Err(_) => Some(Descriptor::Other(&self.buf[self.pos..end])),
+            _ => Some(Descriptor::Other(&self.buf[self.pos..end])),
+        };
+
+        self.pos = end;
+        res
     }
 }
 
 fn ep_for_bootkbd(buf: &[u8]) -> Result<Option<u8>, &'static str> {
-    let mut offset = 0;
+    let mut parser = DescriptorParser::from(buf);
     let mut interface_found = false;
-    while offset < buf.len() {
-        let desc = next_descriptor(&buf[offset..])?;
-        offset += buf[offset] as usize;
-
+    while let Some(desc) = parser.next() {
         if let Descriptor::Interface(idesc) = desc {
             interface_found = idesc.b_interface_class == 0x03
                 && idesc.b_interface_sub_class == 0x01
@@ -453,7 +465,7 @@ mod test {
             0x00, 0x09, 0x21, 0x10, 0x01, 0x00, 0x01, 0x22, 0x85, 0x00, 0x07, 0x05, 0x82, 0x03,
             0x08, 0x00, 0x0a,
         ];
-        let mut offset = 0;
+        let mut parser = DescriptorParser::from(raw);
 
         let config_desc = ConfigurationDescriptor {
             b_length: 9,
@@ -465,10 +477,9 @@ mod test {
             bm_attributes: 0xa0,
             b_max_power: 100,
         };
-        let desc = next_descriptor(&raw[offset..]).expect("Parsing configuration");
+        let desc = parser.next().expect("Parsing configuration");
         if let Descriptor::Configuration(cdesc) = desc {
             assert_eq!(*cdesc, config_desc, "Configuration descriptor mismatch.");
-            offset += cdesc.b_length as usize;
         } else {
             panic!("Wrong descriptor type.");
         }
@@ -484,20 +495,18 @@ mod test {
             b_interface_protocol: 0x01,  // Keyboard
             i_interface: 0,
         };
-        let desc = next_descriptor(&raw[offset..]).expect("Parsing configuration");
+        let desc = parser.next().expect("Parsing configuration");
         if let Descriptor::Interface(cdesc) = desc {
             assert_eq!(*cdesc, interface_desc1, "Interface descriptor mismatch.");
-            offset += cdesc.b_length as usize;
         } else {
             panic!("Wrong descriptor type.");
         }
 
         // Unknown descriptor just yields a byte slice.
         let hid_desc1: &[u8] = &[0x09, 0x21, 0x10, 0x01, 0x00, 0x01, 0x22, 0x41, 0x00];
-        let desc = next_descriptor(&raw[offset..]).expect("Parsing configuration");
+        let desc = parser.next().expect("Parsing configuration");
         if let Descriptor::Other(cdesc) = desc {
             assert_eq!(cdesc, hid_desc1, "HID descriptor mismatch.");
-            offset += cdesc[0] as usize;
         } else {
             panic!("Wrong descriptor type.");
         }
@@ -510,10 +519,9 @@ mod test {
             w_max_packet_size: 0x08,
             b_interval: 0x0a,
         };
-        let desc = next_descriptor(&raw[offset..]).expect("Parsing configuration");
+        let desc = parser.next().expect("Parsing configuration");
         if let Descriptor::Endpoint(cdesc) = desc {
             assert_eq!(*cdesc, endpoint_desc1, "Endpoint descriptor mismatch.");
-            offset += cdesc.b_length as usize;
         } else {
             panic!("Wrong descriptor type.");
         }
@@ -529,20 +537,18 @@ mod test {
             b_interface_protocol: 0x00,  // No protocol
             i_interface: 0,
         };
-        let desc = next_descriptor(&raw[offset..]).expect("Parsing configuration");
+        let desc = parser.next().expect("Parsing configuration");
         if let Descriptor::Interface(cdesc) = desc {
             assert_eq!(*cdesc, interface_desc2, "Interface descriptor mismatch.");
-            offset += cdesc.b_length as usize;
         } else {
             panic!("Wrong descriptor type.");
         }
 
         // Unknown descriptor just yields a byte slice.
         let hid_desc2 = &[0x09, 0x21, 0x10, 0x01, 0x00, 0x01, 0x22, 0x85, 0x00];
-        let desc = next_descriptor(&raw[offset..]).expect("Parsing configuration");
+        let desc = parser.next().expect("Parsing configuration");
         if let Descriptor::Other(cdesc) = desc {
             assert_eq!(cdesc, hid_desc2, "HID descriptor mismatch.");
-            offset += cdesc[0] as usize;
         } else {
             panic!("Wrong descriptor type.");
         }
@@ -555,7 +561,7 @@ mod test {
             w_max_packet_size: 0x08,
             b_interval: 0x0a,
         };
-        let desc = next_descriptor(&raw[offset..]).expect("Parsing configuration");
+        let desc = parser.next().expect("Parsing configuration");
         if let Descriptor::Endpoint(cdesc) = desc {
             assert_eq!(*cdesc, endpoint_desc2, "Endpoint descriptor mismatch.");
         } else {
