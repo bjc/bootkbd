@@ -567,6 +567,8 @@ mod test {
         } else {
             panic!("Wrong descriptor type.");
         }
+
+        assert!(parser.next().is_none(), "Extra descriptors.");
     }
 
     #[test]
