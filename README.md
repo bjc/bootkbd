@@ -6,5 +6,8 @@ library.
 
 # Hardware
 
-Tested on a Logitech G105 keyboard, but any other low-end keyboard
-should probably work.
+This has been tested on the following keyboards:
+
+  * Logitech G105
+  * Niz Plum 85EC
+  * Keyboard.io Model 01

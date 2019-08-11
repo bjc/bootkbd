@@ -1,9 +1,3 @@
 * Documentation
   - README.md
   - Literally every trait and method.
-
-* Parse HID descriptors.
-This driver currently assumes a fair amount of behavior on the part of
-the keyboard, which, for simple keyboards like the Logitech G105 I'm
-testing with, works. More complicated keyboards will probably require
-more in-depth probing and feature selection.

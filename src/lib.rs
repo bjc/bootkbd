@@ -26,6 +26,7 @@ const MAX_ENDPOINTS: usize = 2;
 // The maximum size configuration descriptor we can handle.
 const CONFIG_BUFFER_LEN: usize = 128;
 
+/// Boot protocol keyboard driver for USB hosts.
 pub struct BootKeyboard<F> {
     devices: [Option<Device>; MAX_DEVICES],
     callback: F,
@@ -40,6 +41,12 @@ impl<F> BootKeyboard<F>
 where
     F: FnMut(u8, &[u8]),
 {
+    /// Create a new driver instance which will call
+    /// `callback(address: u8, buffer: &[u8])` when a new keyboard
+    /// report is received.
+    ///
+    /// `address` is the address of the USB device which received the
+    /// report and `buffer` is the contents of the report itself.
     pub fn new(callback: F) -> Self {
         Self {
             devices: [None; MAX_DEVICES],
