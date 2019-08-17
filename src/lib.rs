@@ -64,33 +64,28 @@ where
     }
 
     fn add_device(&mut self, device: DeviceDescriptor, address: u8) -> Result<(), DriverError> {
-        for i in 0..self.devices.len() {
-            if self.devices[i].is_none() {
-                self.devices[i] = Some(Device::new(address, device.b_max_packet_size));
-                return Ok(());
-            }
+        if let Some(ref mut d) = self.devices.iter_mut().find(|d| d.is_none()) {
+            **d = Some(Device::new(address, device.b_max_packet_size));
+            Ok(())
+        } else {
+            Err(DriverError::Permanent(address, "out of devices"))
         }
-        Err(DriverError::Permanent(address, "out of devices"))
     }
 
     fn remove_device(&mut self, address: u8) {
-        for i in 0..self.devices.len() {
-            if let Some(ref dev) = self.devices[i] {
-                if dev.addr == address {
-                    self.devices[i] = None;
-                    return;
-                }
-            }
+        if let Some(ref mut d) = self
+            .devices
+            .iter_mut()
+            .find(|d| d.as_ref().map_or(false, |dd| dd.addr == address))
+        {
+            **d = None;
         }
     }
 
     fn tick(&mut self, millis: usize, host: &mut dyn USBHost) -> Result<(), DriverError> {
-        for d in &mut self.devices[..] {
-            if let Some(ref mut dev) = d {
-                if let Err(TransferError::Permanent(e)) = dev.fsm(millis, host, &mut self.callback)
-                {
-                    return Err(DriverError::Permanent(dev.addr, e));
-                }
+        for dev in self.devices.iter_mut().filter_map(|d| d.as_mut()) {
+            if let Err(TransferError::Permanent(e)) = dev.fsm(millis, host, &mut self.callback) {
+                return Err(DriverError::Permanent(dev.addr, e));
             }
         }
         Ok(())
@@ -482,6 +477,49 @@ mod test {
     use super::*;
 
     #[test]
+    fn add_remove_device() {
+        let mut driver = BootKeyboard::new(|_addr, _report| {});
+
+        let count = |driver: &mut BootKeyboard<_>| {
+            driver
+                .devices
+                .iter()
+                .fold(0, |sum, dev| sum + dev.as_ref().map_or(0, |_| 1))
+        };
+        assert_eq!(count(&mut driver), 0);
+
+        driver.add_device(dummy_device(), 2).unwrap();
+        assert_eq!(count(&mut driver), 1);
+
+        driver.remove_device(2);
+        assert_eq!(count(&mut driver), 0);
+    }
+
+    #[test]
+    fn too_many_devices() {
+        let mut driver = BootKeyboard::new(|_addr, _report| {});
+
+        for i in 0..MAX_DEVICES {
+            driver.add_device(dummy_device(), (i + 1) as u8).unwrap();
+        }
+        assert!(driver
+            .add_device(dummy_device(), (MAX_DEVICES + 1) as u8)
+            .is_err());
+    }
+
+    #[test]
+    fn tick_propagates_errors() {
+        let mut dummyhost = DummyHost { fail: true };
+
+        let mut calls = 0;
+        let mut driver = BootKeyboard::new(|_addr, _report| calls += 1);
+
+        driver.add_device(dummy_device(), 1).unwrap();
+        driver.tick(0, &mut dummyhost).unwrap();
+        assert!(driver.tick(SETTLE_DELAY + 1, &mut dummyhost).is_err());
+    }
+
+    #[test]
     fn parse_logitech_g105_config() {
         // Config, Interface (0.0), HID, Endpoint, Interface (1.0), HID, Endpoint
         let raw: &[u8] = &[
@@ -618,5 +656,69 @@ mod test {
             b_interval: 0x0a,
         };
         assert_eq!(*got, want);
+    }
+
+    fn dummy_device() -> DeviceDescriptor {
+        DeviceDescriptor {
+            b_length: mem::size_of::<DeviceDescriptor>() as u8,
+            b_descriptor_type: DescriptorType::Device,
+            bcd_usb: 0x0110,
+            b_device_class: 0,
+            b_device_sub_class: 0,
+            b_device_protocol: 0,
+            b_max_packet_size: 8,
+            id_vendor: 0xdead,
+            id_product: 0xbeef,
+            bcd_device: 0xf00d,
+            i_manufacturer: 1,
+            i_product: 2,
+            i_serial_number: 3,
+            b_num_configurations: 1,
+        }
+    }
+
+    struct DummyHost {
+        fail: bool,
+    }
+    impl USBHost for DummyHost {
+        fn control_transfer(
+            &mut self,
+            _ep: &mut dyn Endpoint,
+            _bm_request_type: RequestType,
+            _b_request: RequestCode,
+            _w_value: WValue,
+            _w_index: u16,
+            _buf: Option<&mut [u8]>,
+        ) -> Result<usize, TransferError> {
+            if self.fail {
+                Err(TransferError::Permanent("foo"))
+            } else {
+                Ok(0)
+            }
+        }
+
+        fn in_transfer(
+            &mut self,
+            _ep: &mut dyn Endpoint,
+            _buf: &mut [u8],
+        ) -> Result<usize, TransferError> {
+            if self.fail {
+                Err(TransferError::Permanent("foo"))
+            } else {
+                Ok(0)
+            }
+        }
+
+        fn out_transfer(
+            &mut self,
+            _ep: &mut dyn Endpoint,
+            _buf: &[u8],
+        ) -> Result<usize, TransferError> {
+            if self.fail {
+                Err(TransferError::Permanent("foo"))
+            } else {
+                Ok(0)
+            }
+        }
     }
 }
