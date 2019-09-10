@@ -50,7 +50,7 @@ where
     pub fn new(callback: F) -> Self {
         Self {
             devices: [None; MAX_DEVICES],
-            callback: callback,
+            callback,
         }
     }
 }
@@ -122,15 +122,15 @@ impl Device {
         };
 
         Self {
-            addr: addr,
+            addr,
             ep0: EP::new(
                 addr,
                 0,
                 TransferType::Control,
                 Direction::In,
-                max_packet_size as u16,
+                u16::from(max_packet_size),
             ),
-            endpoints: endpoints,
+            endpoints,
             state: DeviceState::Addressed,
         }
     }
@@ -337,11 +337,11 @@ impl EP {
         max_packet_size: u16,
     ) -> Self {
         Self {
-            addr: addr,
-            num: num,
-            transfer_type: transfer_type,
-            direction: direction,
-            max_packet_size: max_packet_size,
+            addr,
+            num,
+            transfer_type,
+            direction,
+            max_packet_size,
             in_toggle: false,
             out_toggle: false,
         }
@@ -401,7 +401,7 @@ struct DescriptorParser<'a> {
 
 impl<'a> From<&'a [u8]> for DescriptorParser<'a> {
     fn from(buf: &'a [u8]) -> Self {
-        Self { buf: buf, pos: 0 }
+        Self { buf, pos: 0 }
     }
 }
 
@@ -422,7 +422,7 @@ impl<'a> DescriptorParser<'a> {
         let res = match DescriptorType::try_from(self.buf[self.pos + 1]) {
             Ok(DescriptorType::Configuration) => {
                 let desc: &ConfigurationDescriptor = unsafe {
-                    let ptr = self.buf.as_ptr().offset(self.pos as isize);
+                    let ptr = self.buf.as_ptr().add(self.pos);
                     &*(ptr as *const _)
                 };
                 Some(Descriptor::Configuration(desc))
@@ -430,7 +430,7 @@ impl<'a> DescriptorParser<'a> {
 
             Ok(DescriptorType::Interface) => {
                 let desc: &InterfaceDescriptor = unsafe {
-                    let ptr = self.buf.as_ptr().offset(self.pos as isize);
+                    let ptr = self.buf.as_ptr().add(self.pos);
                     &*(ptr as *const _)
                 };
                 Some(Descriptor::Interface(desc))
@@ -438,7 +438,7 @@ impl<'a> DescriptorParser<'a> {
 
             Ok(DescriptorType::Endpoint) => {
                 let desc: &EndpointDescriptor = unsafe {
-                    let ptr = self.buf.as_ptr().offset(self.pos as isize);
+                    let ptr = self.buf.as_ptr().add(self.pos);
                     &*(ptr as *const _)
                 };
                 Some(Descriptor::Endpoint(desc))
@@ -455,7 +455,7 @@ impl<'a> DescriptorParser<'a> {
     }
 }
 
-fn ep_for_bootkbd<'a>(buf: &'a [u8]) -> Option<&'a EndpointDescriptor> {
+fn ep_for_bootkbd(buf: &[u8]) -> Option<&EndpointDescriptor> {
     let mut parser = DescriptorParser::from(buf);
     let mut interface_found = false;
     while let Some(desc) = parser.next() {
