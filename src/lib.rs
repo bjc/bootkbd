@@ -48,10 +48,16 @@ where
     /// `address` is the address of the USB device which received the
     /// report and `buffer` is the contents of the report itself.
     pub fn new(callback: F) -> Self {
-        Self {
-            devices: [None; MAX_DEVICES],
-            callback,
-        }
+        let devices: [Option<Device>; MAX_DEVICES] = {
+            let mut devs: [MaybeUninit<Option<Device>>; MAX_DEVICES] =
+                unsafe { mem::MaybeUninit::uninit().assume_init() };
+            for dev in &mut devs[..] {
+                unsafe { ptr::write(dev.as_mut_ptr(), None) }
+            }
+            unsafe { mem::transmute(devs) }
+        };
+
+        Self { devices, callback }
     }
 }
 
