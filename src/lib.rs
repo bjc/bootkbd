@@ -132,6 +132,7 @@ impl Device {
             ep0: EP::new(
                 addr,
                 0,
+                0,
                 TransferType::Control,
                 Direction::In,
                 u16::from(max_packet_size),
@@ -226,12 +227,14 @@ impl Device {
                     Some(&mut tmp),
                 )?;
                 assert!(len == conf_desc.w_total_length as usize);
-                let ep = ep_for_bootkbd(&tmp).expect("no boot keyboard found");
+                let (interface_num, ep) =
+                    ep_for_bootkbd(config_buf).expect("no boot keyboard found");
                 info!("Boot keyboard found on {:?}", ep);
 
                 self.endpoints[0] = Some(EP::new(
                     self.addr,
                     ep.b_endpoint_address & 0x7f,
+                    interface_num,
                     TransferType::Interrupt,
                     Direction::In,
                     ep.w_max_packet_size,
@@ -276,28 +279,31 @@ impl Device {
             }
 
             DeviceState::SetReport => {
-                let mut report: [u8; 1] = [0];
-                let res = host.control_transfer(
-                    &mut self.ep0,
-                    RequestType::from((
-                        RequestDirection::HostToDevice,
-                        RequestKind::Class,
-                        RequestRecipient::Interface,
-                    )),
-                    RequestCode::SetConfiguration,
-                    WValue::from((0, 2)),
-                    0,
-                    Some(&mut report),
-                );
+                if let Some(ref mut ep) = self.endpoints[0] {
+                    let mut r: [u8; 1] = [0];
+                    let report = &mut r[..];
+                    let res = host.control_transfer(
+                        &mut self.ep0,
+                        RequestType::from((
+                            RequestDirection::HostToDevice,
+                            RequestKind::Class,
+                            RequestRecipient::Interface,
+                        )),
+                        RequestCode::SetConfiguration,
+                        WValue::from((0, 2)),
+                        u16::from(ep.interface_num),
+                        Some(report),
+                    );
 
-                if let Err(e) = res {
-                    warn!("couldn't set report: {:?}", e)
+                    if let Err(e) = res {
+                        warn!("couldn't set report: {:?}", e)
+                    }
+
+                    // If we made it this far, thins should be ok, so
+                    // throttle the logging.
+                } else {
+                    return Err(TransferError::Permanent("no boot keyboard"));
                 }
-
-                // If we made it this far, thins should be ok, so
-                // throttle the logging.
-                log::set_max_level(LevelFilter::Info);
-                self.state = DeviceState::Running
             }
 
             DeviceState::Running => {
@@ -327,6 +333,7 @@ unsafe fn to_slice_mut<T>(v: &mut T) -> &mut [u8] {
 struct EP {
     addr: u8,
     num: u8,
+    interface_num: u8,
     transfer_type: TransferType,
     direction: Direction,
     max_packet_size: u16,
@@ -338,6 +345,7 @@ impl EP {
     fn new(
         addr: u8,
         num: u8,
+        interface_num: u8,
         transfer_type: TransferType,
         direction: Direction,
         max_packet_size: u16,
@@ -345,6 +353,7 @@ impl EP {
         Self {
             addr,
             num,
+            interface_num,
             transfer_type,
             direction,
             max_packet_size,
@@ -461,17 +470,24 @@ impl<'a> DescriptorParser<'a> {
     }
 }
 
-fn ep_for_bootkbd(buf: &[u8]) -> Option<&EndpointDescriptor> {
+/// If a boot protocol keyboard is found, return its interface number
+/// and endpoint.
+fn ep_for_bootkbd(buf: &[u8]) -> Option<(u8, &EndpointDescriptor)> {
     let mut parser = DescriptorParser::from(buf);
-    let mut interface_found = false;
+    let mut interface_found = None;
     while let Some(desc) = parser.next() {
         if let Descriptor::Interface(idesc) = desc {
-            interface_found = idesc.b_interface_class == 0x03
+            if idesc.b_interface_class == 0x03
                 && idesc.b_interface_sub_class == 0x01
-                && idesc.b_interface_protocol == 0x01;
+                && idesc.b_interface_protocol == 0x01
+            {
+                interface_found = Some(idesc.b_interface_number);
+            } else {
+                interface_found = None;
+            }
         } else if let Descriptor::Endpoint(edesc) = desc {
-            if interface_found {
-                return Some(edesc);
+            if let Some(interface_num) = interface_found {
+                return Some((interface_num, edesc));
             }
         }
     }
@@ -652,7 +668,7 @@ mod test {
             0x08, 0x00, 0x0a,
         ];
 
-        let got = ep_for_bootkbd(raw).expect("Looking for endpoint");
+        let (got_inum, got) = ep_for_bootkbd(raw).expect("Looking for endpoint");
         let want = EndpointDescriptor {
             b_length: 7,
             b_descriptor_type: DescriptorType::Endpoint,
@@ -661,6 +677,7 @@ mod test {
             w_max_packet_size: 0x08,
             b_interval: 0x0a,
         };
+        assert_eq!(got_inum, 0);
         assert_eq!(*got, want);
     }
 
