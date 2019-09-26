@@ -166,6 +166,8 @@ impl Device {
             }
 
             DeviceState::WaitForSettle(until) => {
+                // TODO: This seems unnecessary. We're not using the
+                // device descriptor at all.
                 if millis > until {
                     let mut dev_desc: MaybeUninit<DeviceDescriptor> = MaybeUninit::uninit();
                     let buf = unsafe { to_slice_mut(&mut dev_desc) };
