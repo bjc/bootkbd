@@ -190,7 +190,7 @@ impl Device {
 
             DeviceState::GetConfig => {
                 let mut conf_desc: MaybeUninit<ConfigurationDescriptor> = MaybeUninit::uninit();
-                let buf = unsafe { to_slice_mut(&mut conf_desc) };
+                let desc_buf = unsafe { to_slice_mut(&mut conf_desc) };
                 let len = host.control_transfer(
                     &mut self.ep0,
                     RequestType::from((
@@ -201,7 +201,7 @@ impl Device {
                     RequestCode::GetDescriptor,
                     WValue::from((0, DescriptorType::Configuration as u8)),
                     0,
-                    Some(buf),
+                    Some(desc_buf),
                 )?;
                 assert!(len == mem::size_of::<ConfigurationDescriptor>());
                 let conf_desc = unsafe { conf_desc.assume_init() };
@@ -214,8 +214,9 @@ impl Device {
                 // TODO: do a real allocation later. For now, keep a
                 // large-ish static buffer and take an appropriately
                 // sized slice into it for the transfer.
-                let mut buf: [u8; CONFIG_BUFFER_LEN] = [0; CONFIG_BUFFER_LEN];
-                let mut tmp = &mut buf[..conf_desc.w_total_length as usize];
+                let mut config =
+                    unsafe { MaybeUninit::<[u8; CONFIG_BUFFER_LEN]>::uninit().assume_init() };
+                let config_buf = &mut config[..conf_desc.w_total_length as usize];
                 let len = host.control_transfer(
                     &mut self.ep0,
                     RequestType::from((
@@ -226,7 +227,7 @@ impl Device {
                     RequestCode::GetDescriptor,
                     WValue::from((0, DescriptorType::Configuration as u8)),
                     0,
-                    Some(&mut tmp),
+                    Some(config_buf),
                 )?;
                 assert!(len == conf_desc.w_total_length as usize);
                 let (interface_num, ep) =
