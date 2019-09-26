@@ -334,15 +334,21 @@ impl Device {
             }
 
             DeviceState::Running => {
-                let mut buf: [u8; 8] = [0; 8];
                 if let Some(ref mut ep) = self.endpoints[0] {
-                    match host.in_transfer(ep, &mut buf) {
-                        Err(TransferError::Permanent(msg)) => error!("reading report: {}", msg),
+                    let mut b: [u8; 8] = [0; 8];
+                    let buf = &mut b[..];
+                    match host.in_transfer(ep, buf) {
+                        Err(TransferError::Permanent(msg)) => {
+                            error!("reading report: {}", msg);
+                            return Err(TransferError::Permanent(msg));
+                        }
                         Err(TransferError::Retry(_)) => return Ok(()),
                         Ok(_) => {
-                            callback(self.addr, &buf);
+                            callback(self.addr, buf);
                         }
                     }
+                } else {
+                    return Err(TransferError::Permanent("no boot keyboard"));
                 }
             }
         }
