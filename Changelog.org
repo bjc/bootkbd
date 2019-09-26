@@ -1,0 +1,5 @@
+* Since 0.1.0
+  - Issue a SET_PROTOCOL request during enumeration to ensure target
+    keyboard is in boot protocol mode.
+  - Use correct inteface number during SET_REPORT request.
+  - Allow up to 32 keyboards to be attached.
