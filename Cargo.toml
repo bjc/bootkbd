@@ -1,6 +1,6 @@
 [package]
 name = "bootkbd"
-version = "0.2.0"
+version = "0.2.1"
 description = "Boot-protocol keyboard driver for usb-host."
 authors = ["Brian Cully <bjc@kublai.com>"]
 edition = "2018"
