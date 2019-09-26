@@ -2,7 +2,7 @@
 
 #![no_std]
 
-use log::{self, debug, error, info, trace, warn, LevelFilter};
+use log::{self, error, info, trace, warn, LevelFilter};
 use usb_host::{
     ConfigurationDescriptor, DescriptorType, DeviceDescriptor, Direction, Driver, DriverError,
     Endpoint, EndpointDescriptor, InterfaceDescriptor, RequestCode, RequestDirection, RequestKind,
@@ -326,6 +326,8 @@ impl Device {
 
                     // If we made it this far, thins should be ok, so
                     // throttle the logging.
+                    log::set_max_level(LevelFilter::Info);
+                    self.state = DeviceState::Running
                 } else {
                     return Err(TransferError::Permanent("no boot keyboard"));
                 }
