@@ -104,6 +104,7 @@ enum DeviceState {
     WaitForSettle(usize),
     GetConfig,
     SetConfig(u8),
+    SetProtocol,
     SetIdle,
     SetReport,
     Running,
@@ -262,7 +263,28 @@ impl Device {
                     none,
                 )?;
 
-                self.state = DeviceState::SetIdle
+                self.state = DeviceState::SetProtocol;
+            }
+
+            DeviceState::SetProtocol => {
+                if let Some(ref ep) = self.endpoints[0] {
+                    host.control_transfer(
+                        &mut self.ep0,
+                        RequestType::from((
+                            RequestDirection::HostToDevice,
+                            RequestKind::Class,
+                            RequestRecipient::Interface,
+                        )),
+                        RequestCode::SetInterface,
+                        WValue::from((0, 0)),
+                        u16::from(ep.interface_num),
+                        None,
+                    )?;
+
+                    self.state = DeviceState::SetIdle;
+                } else {
+                    return Err(TransferError::Permanent("no boot keyboard"));
+                }
             }
 
             DeviceState::SetIdle => {
@@ -278,7 +300,7 @@ impl Device {
                     0,
                     none,
                 )?;
-                self.state = DeviceState::SetReport
+                self.state = DeviceState::SetReport;
             }
 
             DeviceState::SetReport => {
