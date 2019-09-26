@@ -18,7 +18,7 @@ use core::ptr;
 const SETTLE_DELAY: usize = 2;
 
 // How many total devices this driver can support.
-const MAX_DEVICES: usize = 1;
+const MAX_DEVICES: usize = 32;
 
 // And how many endpoints we can support per-device.
 const MAX_ENDPOINTS: usize = 2;
