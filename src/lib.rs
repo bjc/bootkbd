@@ -24,7 +24,7 @@ const MAX_DEVICES: usize = 1;
 const MAX_ENDPOINTS: usize = 2;
 
 // The maximum size configuration descriptor we can handle.
-const CONFIG_BUFFER_LEN: usize = 128;
+const CONFIG_BUFFER_LEN: usize = 256;
 
 /// Boot protocol keyboard driver for USB hosts.
 pub struct BootKeyboard<F> {
@@ -698,6 +698,325 @@ mod test {
             i_serial_number: 3,
             b_num_configurations: 1,
         }
+    }
+
+    #[test]
+    fn parse_keyboardio_config() {
+        let raw: &[u8] = &[
+            0x09, 0x02, 0x96, 0x00, 0x05, 0x01, 0x00, 0xa0, 0xfa, 0x08, 0x0b, 0x00, 0x02, 0x02,
+            0x02, 0x01, 0x00, 0x09, 0x04, 0x00, 0x00, 0x01, 0x02, 0x02, 0x00, 0x00, 0x05, 0x24,
+            0x00, 0x10, 0x01, 0x05, 0x24, 0x01, 0x01, 0x01, 0x04, 0x24, 0x02, 0x06, 0x05, 0x24,
+            0x06, 0x00, 0x01, 0x07, 0x05, 0x81, 0x03, 0x10, 0x00, 0x40, 0x09, 0x04, 0x01, 0x00,
+            0x02, 0x0a, 0x00, 0x00, 0x00, 0x07, 0x05, 0x02, 0x02, 0x40, 0x00, 0x00, 0x07, 0x05,
+            0x83, 0x02, 0x40, 0x00, 0x00, 0x09, 0x04, 0x02, 0x00, 0x01, 0x03, 0x00, 0x00, 0x00,
+            0x09, 0x21, 0x01, 0x01, 0x00, 0x01, 0x22, 0x35, 0x00, 0x07, 0x05, 0x84, 0x03, 0x40,
+            0x00, 0x01, 0x09, 0x04, 0x03, 0x00, 0x01, 0x03, 0x00, 0x00, 0x00, 0x09, 0x21, 0x01,
+            0x01, 0x00, 0x01, 0x22, 0x72, 0x00, 0x07, 0x05, 0x85, 0x03, 0x40, 0x00, 0x01, 0x09,
+            0x04, 0x04, 0x00, 0x01, 0x03, 0x01, 0x01, 0x00, 0x09, 0x21, 0x01, 0x01, 0x00, 0x01,
+            0x22, 0x3f, 0x00, 0x07, 0x05, 0x86, 0x03, 0x40, 0x00, 0x01,
+        ];
+        let mut parser = DescriptorParser::from(raw);
+
+        let config_desc = ConfigurationDescriptor {
+            b_length: 9,
+            b_descriptor_type: DescriptorType::Configuration,
+            w_total_length: 150,
+            b_num_interfaces: 5,
+            b_configuration_value: 1,
+            i_configuration: 0,
+            bm_attributes: 0xa0,
+            b_max_power: 250,
+        };
+        let desc = parser.next().expect("Parsing configuration");
+        if let Descriptor::Configuration(cdesc) = desc {
+            assert_eq!(*cdesc, config_desc, "Configuration descriptor mismatch.");
+        } else {
+            panic!("Wrong descriptor type.");
+        }
+
+        // Interface Association Descriptor
+        let desc = parser.next().expect("Parsing configuration");
+        if let Descriptor::Other(odesc) = desc {
+            let odesc1: &[u8] = &[0x08, 0x0b, 0x00, 0x02, 0x02, 0x02, 0x01, 0x00];
+            assert_eq!(odesc, odesc1, "Interface descriptor mismatch");
+        } else {
+            panic!("Wrong descriptor type.")
+        }
+
+        let interface_desc1 = InterfaceDescriptor {
+            b_length: 9,
+            b_descriptor_type: DescriptorType::Interface,
+            b_interface_number: 0,
+            b_alternate_setting: 0,
+            b_num_endpoints: 1,
+            b_interface_class: 0x02,     // Communications and CDC Control
+            b_interface_sub_class: 0x02, // Abstract Control Model
+            b_interface_protocol: 0x00,
+            i_interface: 0,
+        };
+        let desc = parser.next().expect("Parsing configuration");
+        if let Descriptor::Interface(cdesc) = desc {
+            assert_eq!(*cdesc, interface_desc1, "Interface descriptor mismatch.");
+        } else {
+            panic!("Wrong descriptor type.");
+        }
+
+        // Four communications descriptors.
+        let desc = parser.next().expect("Parsing configuration");
+        if let Descriptor::Other(odesc) = desc {
+            let odesc1: &[u8] = &[0x05, 0x24, 0x00, 0x10, 0x01];
+            assert_eq!(odesc, odesc1, "Interface descriptor mismatch");
+        } else {
+            panic!("Wrong descriptor type.")
+        }
+
+        let desc = parser.next().expect("Parsing configuration");
+        if let Descriptor::Other(odesc) = desc {
+            let odesc1: &[u8] = &[0x05, 0x24, 0x01, 0x01, 0x01];
+            assert_eq!(odesc, odesc1, "Interface descriptor mismatch");
+        } else {
+            panic!("Wrong descriptor type.")
+        }
+
+        let desc = parser.next().expect("Parsing configuration");
+        if let Descriptor::Other(odesc) = desc {
+            let odesc1: &[u8] = &[0x04, 0x24, 0x02, 0x06];
+            assert_eq!(odesc, odesc1, "Interface descriptor mismatch");
+        } else {
+            panic!("Wrong descriptor type.")
+        }
+
+        let desc = parser.next().expect("Parsing configuration");
+        if let Descriptor::Other(odesc) = desc {
+            let odesc1: &[u8] = &[0x05, 0x24, 0x06, 0x00, 0x01];
+            assert_eq!(odesc, odesc1, "Interface descriptor mismatch");
+        } else {
+            panic!("Wrong descriptor type.")
+        }
+
+        let endpoint_desc1 = EndpointDescriptor {
+            b_length: 7,
+            b_descriptor_type: DescriptorType::Endpoint,
+            b_endpoint_address: 0x81,
+            bm_attributes: 0x03,
+            w_max_packet_size: 16,
+            b_interval: 64,
+        };
+        let desc = parser.next().expect("Parsing configuration");
+        if let Descriptor::Endpoint(cdesc) = desc {
+            assert_eq!(*cdesc, endpoint_desc1, "Endpoint descriptor mismatch.");
+        } else {
+            panic!("Wrong descriptor type.");
+        }
+
+        // CDC-Data interface.
+        let interface_desc1 = InterfaceDescriptor {
+            b_length: 9,
+            b_descriptor_type: DescriptorType::Interface,
+            b_interface_number: 1,
+            b_alternate_setting: 0,
+            b_num_endpoints: 2,
+            b_interface_class: 0x0a, // CDC-Data
+            b_interface_sub_class: 0x00,
+            b_interface_protocol: 0x00,
+            i_interface: 0,
+        };
+        let desc = parser.next().expect("Parsing configuration");
+        if let Descriptor::Interface(cdesc) = desc {
+            assert_eq!(*cdesc, interface_desc1, "Interface descriptor mismatch.");
+        } else {
+            panic!("Wrong descriptor type.");
+        }
+
+        let endpoint_desc1 = EndpointDescriptor {
+            b_length: 7,
+            b_descriptor_type: DescriptorType::Endpoint,
+            b_endpoint_address: 0x02,
+            bm_attributes: 0x02,
+            w_max_packet_size: 64,
+            b_interval: 0,
+        };
+        let desc = parser.next().expect("Parsing configuration");
+        if let Descriptor::Endpoint(cdesc) = desc {
+            assert_eq!(*cdesc, endpoint_desc1, "Endpoint descriptor mismatch.");
+        } else {
+            panic!("Wrong descriptor type.");
+        }
+
+        let endpoint_desc1 = EndpointDescriptor {
+            b_length: 7,
+            b_descriptor_type: DescriptorType::Endpoint,
+            b_endpoint_address: 0x83,
+            bm_attributes: 0x02,
+            w_max_packet_size: 64,
+            b_interval: 0,
+        };
+        let desc = parser.next().expect("Parsing configuration");
+        if let Descriptor::Endpoint(cdesc) = desc {
+            assert_eq!(*cdesc, endpoint_desc1, "Endpoint descriptor mismatch.");
+        } else {
+            panic!("Wrong descriptor type.");
+        }
+
+        // HID interface.
+        let interface_desc1 = InterfaceDescriptor {
+            b_length: 9,
+            b_descriptor_type: DescriptorType::Interface,
+            b_interface_number: 2,
+            b_alternate_setting: 0,
+            b_num_endpoints: 1,
+            b_interface_class: 0x03, // HID
+            b_interface_sub_class: 0x00,
+            b_interface_protocol: 0x00,
+            i_interface: 0,
+        };
+        let desc = parser.next().expect("Parsing configuration");
+        if let Descriptor::Interface(cdesc) = desc {
+            assert_eq!(*cdesc, interface_desc1, "Interface descriptor mismatch.");
+        } else {
+            panic!("Wrong descriptor type.");
+        }
+
+        // HID Descriptor.
+        let desc = parser.next().expect("Parsing configuration");
+        if let Descriptor::Other(odesc) = desc {
+            let odesc1: &[u8] = &[0x09, 0x21, 0x01, 0x01, 0x00, 0x01, 0x22, 0x35, 0x00];
+            assert_eq!(odesc, odesc1, "Interface descriptor mismatch");
+        } else {
+            panic!("Wrong descriptor type.")
+        }
+
+        let endpoint_desc1 = EndpointDescriptor {
+            b_length: 7,
+            b_descriptor_type: DescriptorType::Endpoint,
+            b_endpoint_address: 0x84,
+            bm_attributes: 0x03,
+            w_max_packet_size: 64,
+            b_interval: 1,
+        };
+        let desc = parser.next().expect("Parsing configuration");
+        if let Descriptor::Endpoint(cdesc) = desc {
+            assert_eq!(*cdesc, endpoint_desc1, "Endpoint descriptor mismatch.");
+        } else {
+            panic!("Wrong descriptor type.");
+        }
+
+        // HID interface.
+        let interface_desc1 = InterfaceDescriptor {
+            b_length: 9,
+            b_descriptor_type: DescriptorType::Interface,
+            b_interface_number: 3,
+            b_alternate_setting: 0,
+            b_num_endpoints: 1,
+            b_interface_class: 0x03, // HID
+            b_interface_sub_class: 0x00,
+            b_interface_protocol: 0x00,
+            i_interface: 0,
+        };
+        let desc = parser.next().expect("Parsing configuration");
+        if let Descriptor::Interface(cdesc) = desc {
+            assert_eq!(*cdesc, interface_desc1, "Interface descriptor mismatch.");
+        } else {
+            panic!("Wrong descriptor type.");
+        }
+
+        // HID Descriptor.
+        let desc = parser.next().expect("Parsing configuration");
+        if let Descriptor::Other(odesc) = desc {
+            let odesc1: &[u8] = &[0x09, 0x21, 0x01, 0x01, 0x00, 0x01, 0x22, 0x72, 0x00];
+            assert_eq!(odesc, odesc1, "Interface descriptor mismatch");
+        } else {
+            panic!("Wrong descriptor type.")
+        }
+
+        let endpoint_desc1 = EndpointDescriptor {
+            b_length: 7,
+            b_descriptor_type: DescriptorType::Endpoint,
+            b_endpoint_address: 0x85,
+            bm_attributes: 0x03,
+            w_max_packet_size: 64,
+            b_interval: 1,
+        };
+        let desc = parser.next().expect("Parsing configuration");
+        if let Descriptor::Endpoint(cdesc) = desc {
+            assert_eq!(*cdesc, endpoint_desc1, "Endpoint descriptor mismatch.");
+        } else {
+            panic!("Wrong descriptor type.");
+        }
+
+        // HID interface.
+        let interface_desc1 = InterfaceDescriptor {
+            b_length: 9,
+            b_descriptor_type: DescriptorType::Interface,
+            b_interface_number: 4,
+            b_alternate_setting: 0,
+            b_num_endpoints: 1,
+            b_interface_class: 0x03,     // HID
+            b_interface_sub_class: 0x01, // Boot Interface
+            b_interface_protocol: 0x01,  // Keyboard
+            i_interface: 0,
+        };
+        let desc = parser.next().expect("Parsing configuration");
+        if let Descriptor::Interface(cdesc) = desc {
+            assert_eq!(*cdesc, interface_desc1, "Interface descriptor mismatch.");
+        } else {
+            panic!("Wrong descriptor type.");
+        }
+
+        // HID Descriptor.
+        let desc = parser.next().expect("Parsing configuration");
+        if let Descriptor::Other(odesc) = desc {
+            let odesc1: &[u8] = &[0x09, 0x21, 0x01, 0x01, 0x00, 0x01, 0x22, 0x3f, 0x00];
+            assert_eq!(odesc, odesc1, "Interface descriptor mismatch");
+        } else {
+            panic!("Wrong descriptor type.")
+        }
+
+        let endpoint_desc1 = EndpointDescriptor {
+            b_length: 7,
+            b_descriptor_type: DescriptorType::Endpoint,
+            b_endpoint_address: 0x86,
+            bm_attributes: 0x03,
+            w_max_packet_size: 64,
+            b_interval: 1,
+        };
+        let desc = parser.next().expect("Parsing configuration");
+        if let Descriptor::Endpoint(cdesc) = desc {
+            assert_eq!(*cdesc, endpoint_desc1, "Endpoint descriptor mismatch.");
+        } else {
+            panic!("Wrong descriptor type.");
+        }
+
+        assert!(parser.next().is_none(), "Extra descriptors.");
+    }
+
+    #[test]
+    fn keyboardio_discovers_bootkbd() {
+        let raw: &[u8] = &[
+            0x09, 0x02, 0x96, 0x00, 0x05, 0x01, 0x00, 0xa0, 0xfa, 0x08, 0x0b, 0x00, 0x02, 0x02,
+            0x02, 0x01, 0x00, 0x09, 0x04, 0x00, 0x00, 0x01, 0x02, 0x02, 0x00, 0x00, 0x05, 0x24,
+            0x00, 0x10, 0x01, 0x05, 0x24, 0x01, 0x01, 0x01, 0x04, 0x24, 0x02, 0x06, 0x05, 0x24,
+            0x06, 0x00, 0x01, 0x07, 0x05, 0x81, 0x03, 0x10, 0x00, 0x40, 0x09, 0x04, 0x01, 0x00,
+            0x02, 0x0a, 0x00, 0x00, 0x00, 0x07, 0x05, 0x02, 0x02, 0x40, 0x00, 0x00, 0x07, 0x05,
+            0x83, 0x02, 0x40, 0x00, 0x00, 0x09, 0x04, 0x02, 0x00, 0x01, 0x03, 0x00, 0x00, 0x00,
+            0x09, 0x21, 0x01, 0x01, 0x00, 0x01, 0x22, 0x35, 0x00, 0x07, 0x05, 0x84, 0x03, 0x40,
+            0x00, 0x01, 0x09, 0x04, 0x03, 0x00, 0x01, 0x03, 0x00, 0x00, 0x00, 0x09, 0x21, 0x01,
+            0x01, 0x00, 0x01, 0x22, 0x72, 0x00, 0x07, 0x05, 0x85, 0x03, 0x40, 0x00, 0x01, 0x09,
+            0x04, 0x04, 0x00, 0x01, 0x03, 0x01, 0x01, 0x00, 0x09, 0x21, 0x01, 0x01, 0x00, 0x01,
+            0x22, 0x3f, 0x00, 0x07, 0x05, 0x86, 0x03, 0x40, 0x00, 0x01,
+        ];
+
+        let (got_inum, got) = ep_for_bootkbd(raw).expect("Looking for endpoint");
+        let want = EndpointDescriptor {
+            b_length: 7,
+            b_descriptor_type: DescriptorType::Endpoint,
+            b_endpoint_address: 0x86,
+            bm_attributes: 0x03,
+            w_max_packet_size: 64,
+            b_interval: 1,
+        };
+        assert_eq!(got_inum, 4);
+        assert_eq!(*got, want);
     }
 
     struct DummyHost {
