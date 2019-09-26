@@ -155,7 +155,7 @@ impl Device {
         unsafe {
             static mut LAST_STATE: DeviceState = DeviceState::Addressed;
             if LAST_STATE != self.state {
-                debug!("{:?} -> {:?}", LAST_STATE, self.state);
+                info!("{:?} -> {:?}", LAST_STATE, self.state);
                 LAST_STATE = self.state;
             }
         }
