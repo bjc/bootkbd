@@ -336,15 +336,14 @@ impl Device {
             DeviceState::Running => {
                 if let Some(ref mut ep) = self.endpoints[0] {
                     let mut b: [u8; 8] = [0; 8];
-                    let buf = &mut b[..];
-                    match host.in_transfer(ep, buf) {
+                    match host.in_transfer(ep, &mut b) {
                         Err(TransferError::Permanent(msg)) => {
                             error!("reading report: {}", msg);
                             return Err(TransferError::Permanent(msg));
                         }
                         Err(TransferError::Retry(_)) => return Ok(()),
                         Ok(_) => {
-                            callback(self.addr, buf);
+                            callback(self.addr, &b);
                         }
                     }
                 } else {
